@@ -1,0 +1,30 @@
+{
+    "environment": {
+        "num_floors": 4,
+        "initial_food": 4,
+        "hunger_increase_rate": 0.5,
+        "max_hunger": 2.0,
+        "min_hunger": 0.0
+    },
+    "training": {
+        "episodes": 3000,
+        "eval_interval": 100,
+        "q_learning": {
+            "learning_rate": 0.1,
+            "discount_factor": 0.95,
+            "epsilon": 0.1
+        },
+        "monte_carlo": {
+            "epsilon": 0.1
+        },
+        "random_seed": 42
+    },
+    "rewards": {
+        "survive_step": 0.1,
+        "death": -1.0
+    },
+    "metrics": {
+        "log_interval": 10,
+        "save_interval": 100
+    }
+}
