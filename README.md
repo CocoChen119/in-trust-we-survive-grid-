@@ -24,20 +24,6 @@ A multi-agent reinforcement learning simulation where agents learn to survive in
 - **Metrics & plots**: training curves, early-phase analysis, and algorithm comparison.
 - **Configurable**: environment and training settings via `config/config.json`.
 
-### Installation
-
-```bash
-git clone https://github.com/your-username/hunger-game.git
-cd hunger-game
-pip install -r requirements.txt
-```
-
-### Running the tower experiments
-
-```bash
-cd hunger_game
-python main.py
-```
 
 This trains Q-learning, Monte Carlo, and IE‑GS agents in the tower environment and writes result figures (learning curves and comparisons) into the project root.
 
