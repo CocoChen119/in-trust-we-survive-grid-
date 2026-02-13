@@ -3,6 +3,7 @@ import os
 
 os.makedirs('config', exist_ok=True)
 
+# 配置内容
 config = {
     "environment": {
         "num_floors": 4,

@@ -449,6 +449,51 @@ class GridTrustExperiment:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.close()
 
+        # additional figure: learning curves (episode rewards over training)
+        learn_path = os.path.join(
+            base_dir,
+            f"grid_learning_curves{self.save_suffix}.png",
+        )
+
+        fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+
+        # average episode reward (trust vs baseline)
+        # per-episode mean over agents
+        trust_ep_mean = []
+        base_ep_mean = []
+        num_eps = len(next(iter(self.trust_episode_rewards.values()), []))
+        for ep in range(num_eps):
+            trust_vals = [
+                self.trust_episode_rewards[aid][ep]
+                for aid in self.env.agent_ids
+            ]
+            base_vals = [
+                self.base_episode_rewards[aid][ep]
+                for aid in self.env.agent_ids
+            ]
+            trust_ep_mean.append(float(np.mean(trust_vals)))
+            base_ep_mean.append(float(np.mean(base_vals)))
+
+        sm_trust_rew = self._smooth(trust_ep_mean, window=80)
+        sm_base_rew = self._smooth(base_ep_mean, window=80)
+        ax.plot(sm_trust_rew, color="tab:red", linewidth=1.8, label="Trust-based")
+        ax.plot(
+            sm_base_rew,
+            color="tab:blue",
+            linewidth=1.8,
+            linestyle="--",
+            label="Baseline",
+        )
+        ax.set_title("Average episode reward over training")
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Reward")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(learn_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
 
 if __name__ == "__main__":
     # Main configuration used in the paper (medium difficulty, social dilemma present)
