@@ -1,6 +1,8 @@
 import numpy as np
 from typing import Dict, Tuple, List, Optional
 
+import matplotlib.pyplot as plt
+
 
 class GridTrustEnv:
     """
@@ -64,6 +66,10 @@ class GridTrustEnv:
         self.resource_amounts: Dict[Tuple[int, int], int] = {}
         self.cooldown_remaining: Dict[Tuple[int, int], int] = {}
         self.harvest_history: Dict[Tuple[int, int], List[int]] = {}
+
+        # rendering helpers
+        self._fig = None
+        self._ax = None
 
     # ------------------------------------------------------------------
     # Core API
@@ -262,6 +268,64 @@ class GridTrustEnv:
             obs[aid] = vec
 
         return obs
+
+    # ------------------------------------------------------------------
+    # Simple visualization
+    # ------------------------------------------------------------------
+    def render(self, mode: str = "human"):
+        """
+        Visualize the current grid state.
+
+        - Green intensity encodes remaining resources.
+        - Red tiles indicate cooldown (over-harvested) areas.
+        - Blue circles mark agent positions.
+
+        mode:
+            "human"     -> show a matplotlib window and return None
+            "rgb_array" -> return an (H, W, 3) uint8 array for use in animations
+        """
+        # base canvas: [grid_size, grid_size, 3], start from white
+        canvas = np.ones((self.grid_size, self.grid_size, 3), dtype=np.float32)
+
+        # normalise resources to [0,1] and colour from white -> green
+        max_res = float(self.resource_per_tile) if self.resource_per_tile > 0 else 1.0
+        for (x, y), amt in self.resource_amounts.items():
+            g = max(0.0, min(1.0, amt / max_res))
+            if g > 0.0:
+                # interpolate between white [1,1,1] and green [0,1,0]
+                canvas[x, y, :] = np.array([1.0 - g, 1.0, 1.0 - g], dtype=np.float32)
+
+        # cooldown tiles in soft red
+        for (x, y) in self.cooldown_remaining.keys():
+            canvas[x, y, :] = np.array([1.0, 0.6, 0.6], dtype=np.float32)
+
+        # agents as bright blue circles (overlay on top)
+        for idx, aid in enumerate(self.agent_ids):
+            x, y = self.agent_positions.get(aid, np.array([0, 0], dtype=int))
+            canvas[x, y, :] = np.array([0.2, 0.2, 1.0], dtype=np.float32)
+
+        # transpose for imshow (x,y) -> (row,col)
+        img = np.transpose(canvas, (1, 0, 2))
+
+        if mode == "rgb_array":
+            # upscale each cell so saved GIF/frames have higher resolution
+            zoom = 20  # each grid cell becomes 20x20 pixels
+            big = np.kron(img, np.ones((zoom, zoom, 1), dtype=img.dtype))
+            return (big * 255).astype(np.uint8)
+
+        if self._fig is None or self._ax is None:
+            self._fig, self._ax = plt.subplots(1, 1, figsize=(5, 5))
+        self._ax.clear()
+        self._ax.set_facecolor("white")
+        self._ax.imshow(img, origin="lower")
+        self._ax.set_xticks(range(self.grid_size))
+        self._ax.set_yticks(range(self.grid_size))
+        self._ax.set_xticklabels([])
+        self._ax.set_yticklabels([])
+        self._ax.grid(color="lightgray", alpha=0.7, linewidth=0.8)
+        self._ax.set_title(f"Step {self.step_count}")
+        plt.tight_layout()
+        plt.pause(0.01)
 
     # ------------------------------------------------------------------
     # Episode-level statistics helpers

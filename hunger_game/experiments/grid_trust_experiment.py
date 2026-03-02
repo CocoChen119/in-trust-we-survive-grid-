@@ -8,6 +8,11 @@ import numpy as np
 
 from .grid_trust_env import GridTrustEnv
 
+try:
+    import imageio.v2 as imageio
+except ImportError:  # pragma: no cover - optional dependency
+    imageio = None
+
 
 @dataclass
 class GridTrustConfig:
@@ -112,7 +117,8 @@ class GridTrustExperiment:
             env_kwargs = {}
         # ensure horizon matches config unless explicitly overridden
         env_kwargs.setdefault("max_steps", self.cfg.max_steps)
-        self.env = GridTrustEnv(**env_kwargs)
+        self.env_kwargs = dict(env_kwargs)
+        self.env = GridTrustEnv(**self.env_kwargs)
         self.save_suffix = save_suffix
 
         obs0 = self.env.reset()
@@ -162,28 +168,35 @@ class GridTrustExperiment:
         self.base_conflict_level: list[float] = []
 
     def run(self) -> None:
+        # pre-generate episode seeds so that trust and baseline see
+        # the same sequence of environment realisations
+        episode_seeds = [
+            int(np.random.randint(0, 10**9)) for _ in range(self.cfg.episodes)
+        ]
+
         # 1) run trust-based experiment
-        for ep in range(self.cfg.episodes):
-            obs = self.env.reset()
+        for ep, ep_seed in enumerate(episode_seeds):
+            env = GridTrustEnv(seed=ep_seed, **self.env_kwargs)
+            obs = env.reset()
             done = False
-            ep_rew = {aid: 0.0 for aid in self.env.agent_ids}
+            ep_rew = {aid: 0.0 for aid in env.agent_ids}
             cd_per_step: list[float] = []
             res_per_step: list[float] = []
 
             while not done:
-                cd_tiles = float(len(self.env.cooldown_remaining))
-                total_tiles = float(self.env.grid_size * self.env.grid_size)
+                cd_tiles = float(len(env.cooldown_remaining))
+                total_tiles = float(env.grid_size * env.grid_size)
                 cd_frac = cd_tiles / max(1.0, total_tiles)
 
                 actions = {}
-                for aid in self.env.agent_ids:
+                for aid in env.agent_ids:
                     actions[aid] = self.trust_agents[aid].select_action(
                         obs[aid], cooldown_tiles=cd_tiles, training=True
                     )
 
-                next_obs, rewards, done, info = self.env.step(actions)
+                next_obs, rewards, done, info = env.step(actions)
 
-                for aid in self.env.agent_ids:
+                for aid in env.agent_ids:
                     self.trust_agents[aid].update(
                         obs[aid],
                         actions[aid],
@@ -207,7 +220,7 @@ class GridTrustExperiment:
 
             # per-episode reward fairness (trust)
             rewards_vec = np.array(
-                [ep_rew[aid] for aid in self.env.agent_ids], dtype=np.float32
+                [ep_rew[aid] for aid in env.agent_ids], dtype=np.float32
             )
             self.trust_gini_rewards.append(self._gini(rewards_vec))
 
@@ -215,11 +228,11 @@ class GridTrustExperiment:
             self.trust_min_return.append(float(np.min(rewards_vec)))
 
             # per-episode cluster lifetime and conflict level
-            lifetimes = self.env.get_episode_cluster_lifetimes()
+            lifetimes = env.get_episode_cluster_lifetimes()
             self.trust_cluster_lifetime.append(float(np.mean(lifetimes)))
-            self.trust_conflict_level.append(self.env.get_episode_conflict_level())
+            self.trust_conflict_level.append(env.get_episode_conflict_level())
 
-            for aid in self.env.agent_ids:
+            for aid in env.agent_ids:
                 self.trust_episode_rewards[aid].append(ep_rew[aid])
                 th = self.trust_agents[aid].trust_history
                 self.trust_episode_trust[aid].append(th[-1] if th else 0.5)
@@ -245,32 +258,33 @@ class GridTrustExperiment:
                 )
 
         # 2) run baseline experiment (no trust shaping)
-        for ep in range(self.cfg.episodes):
-            obs = self.env.reset()
+        for ep, ep_seed in enumerate(episode_seeds):
+            env = GridTrustEnv(seed=ep_seed, **self.env_kwargs)
+            obs = env.reset()
             done = False
-            ep_rew = {aid: 0.0 for aid in self.env.agent_ids}
+            ep_rew = {aid: 0.0 for aid in env.agent_ids}
             cd_per_step: list[float] = []
             res_per_step: list[float] = []
 
             while not done:
-                cd_tiles = float(len(self.env.cooldown_remaining))
-                total_tiles = float(self.env.grid_size * self.env.grid_size)
+                cd_tiles = float(len(env.cooldown_remaining))
+                total_tiles = float(env.grid_size * env.grid_size)
                 cd_frac = cd_tiles / max(1.0, total_tiles)
 
                 actions = {}
-                for aid in self.env.agent_ids:
+                for aid in env.agent_ids:
                     # simple epsilon-greedy over linear Q, without trust bias
                     if np.random.rand() < self.cfg.epsilon:
-                        actions[aid] = np.random.randint(self.env.n_actions)
+                        actions[aid] = np.random.randint(env.n_actions)
                     else:
                         w = self.base_weights[aid]
                         s = np.clip(obs[aid], -5.0, 5.0)
                         q_vals = w @ s
                         actions[aid] = int(np.argmax(q_vals))
 
-                next_obs, rewards, done, info = self.env.step(actions)
+                next_obs, rewards, done, info = env.step(actions)
 
-                for aid in self.env.agent_ids:
+                for aid in env.agent_ids:
                     w = self.base_weights[aid]
                     s = np.clip(obs[aid], -5.0, 5.0)
                     s_next = np.clip(next_obs[aid], -5.0, 5.0)
@@ -293,7 +307,7 @@ class GridTrustExperiment:
                 float(res_per_step[-1]) if res_per_step else 0.0
             )
 
-            for aid in self.env.agent_ids:
+            for aid in env.agent_ids:
                 self.base_episode_rewards[aid].append(ep_rew[aid])
 
             # per-episode reward fairness (baseline)
@@ -327,6 +341,151 @@ class GridTrustExperiment:
         self._print_summary()
         # Main figure: cooldown + conflict in one image for easy comparison
         self._plot_results()
+
+    def record_trust_episode_gif(
+        self,
+        out_path: str = "grid_trust_episode.gif",
+        max_steps: Optional[int] = None,
+    ) -> None:
+        """
+        Run a single episode with the trained trust-based agents and
+        record a simple GIF animation of the grid.
+
+        This requires imageio to be installed. You can install it with:
+            pip install imageio
+        """
+        if imageio is None:
+            raise RuntimeError(
+                "imageio is not available. Please install it with 'pip install imageio' "
+                "to enable GIF recording."
+            )
+
+        obs = self.env.reset()
+        done = False
+        frames: list[np.ndarray] = []
+        step_limit = max_steps if max_steps is not None else self.cfg.max_steps
+
+        step = 0
+        while not done and step < step_limit:
+            cd_tiles = float(len(self.env.cooldown_remaining))
+            actions = {}
+            for aid in self.env.agent_ids:
+                actions[aid] = self.trust_agents[aid].select_action(
+                    obs[aid], cooldown_tiles=cd_tiles, training=False
+                )
+
+            obs, rewards, done, info = self.env.step(actions)
+            frame = self.env.render(mode="rgb_array")
+            frames.append(frame)
+            step += 1
+
+        imageio.mimsave(out_path, frames, fps=3)
+
+    def record_baseline_episode_gif(
+        self,
+        out_path: str = "grid_baseline_episode.gif",
+        max_steps: Optional[int] = None,
+    ) -> None:
+        """
+        Run a single episode with the baseline agents (no trust shaping)
+        and record a GIF animation.
+        """
+        if imageio is None:
+            raise RuntimeError(
+                "imageio is not available. Please install it with 'pip install imageio' "
+                "to enable GIF recording."
+            )
+
+        # fresh env with same configuration
+        self.env = GridTrustEnv(**self.env_kwargs)
+        obs = self.env.reset()
+        done = False
+        frames: list[np.ndarray] = []
+        step_limit = max_steps if max_steps is not None else self.cfg.max_steps
+
+        step = 0
+        while not done and step < step_limit:
+            cd_tiles = float(len(self.env.cooldown_remaining))
+            actions = {}
+            for aid in self.env.agent_ids:
+                # greedy w.r.t. learned weights (no epsilon) for clearer behaviour
+                w = self.base_weights[aid]
+                s = np.clip(obs[aid], -5.0, 5.0)
+                q_vals = w @ s
+                actions[aid] = int(np.argmax(q_vals))
+
+            obs, rewards, done, info = self.env.step(actions)
+            frame = self.env.render(mode="rgb_array")
+            frames.append(frame)
+            step += 1
+
+        imageio.mimsave(out_path, frames, fps=3)
+
+    def record_comparison_gif(
+        self,
+        out_path: str = "grid_trust_vs_baseline.gif",
+        max_steps: Optional[int] = None,
+    ) -> None:
+        """
+        Record a side-by-side GIF comparing a trust-based episode (left)
+        and a baseline episode (right).
+        """
+        if imageio is None:
+            raise RuntimeError(
+                "imageio is not available. Please install it with 'pip install imageio' "
+                "to enable GIF recording."
+            )
+
+        # 1) trust-based episode frames
+        obs = self.env.reset()
+        done = False
+        trust_frames: list[np.ndarray] = []
+        step_limit = max_steps if max_steps is not None else self.cfg.max_steps
+        step = 0
+        while not done and step < step_limit:
+            cd_tiles = float(len(self.env.cooldown_remaining))
+            actions = {}
+            for aid in self.env.agent_ids:
+                actions[aid] = self.trust_agents[aid].select_action(
+                    obs[aid], cooldown_tiles=cd_tiles, training=False
+                )
+            obs, rewards, done, info = self.env.step(actions)
+            trust_frames.append(self.env.render(mode="rgb_array"))
+            step += 1
+
+        # 2) baseline episode frames (fresh env)
+        base_env = GridTrustEnv(**self.env_kwargs)
+        obs = base_env.reset()
+        done = False
+        base_frames: list[np.ndarray] = []
+        step = 0
+        while not done and step < step_limit:
+            cd_tiles = float(len(base_env.cooldown_remaining))
+            actions = {}
+            for aid in base_env.agent_ids:
+                w = self.base_weights[aid]
+                s = np.clip(obs[aid], -5.0, 5.0)
+                q_vals = w @ s
+                actions[aid] = int(np.argmax(q_vals))
+            obs, rewards, done, info = base_env.step(actions)
+            base_frames.append(base_env.render(mode="rgb_array"))
+            step += 1
+
+        # 3) align lengths and stack horizontally
+        n = min(len(trust_frames), len(base_frames))
+        combined_frames: list[np.ndarray] = []
+        for i in range(n):
+            left = trust_frames[i]
+            right = base_frames[i]
+            # ensure same height
+            h = min(left.shape[0], right.shape[0])
+            left = left[:h, :, :]
+            right = right[:h, :, :]
+            combined = np.concatenate([left, right], axis=1)
+            combined_frames.append(combined)
+
+        print(f"[GIF] trust frames={len(trust_frames)}, baseline frames={len(base_frames)}, combined={len(combined_frames)}")
+        imageio.mimsave(out_path, combined_frames, fps=3)
 
     # ---------------- plotting ----------------
     def _smooth(self, arr: list[float], window: int = 80) -> np.ndarray:
@@ -509,4 +668,23 @@ if __name__ == "__main__":
     exp = GridTrustExperiment(cfg, env_kwargs=env_kwargs, save_suffix="")
     exp.run()
 
+    # After training, automatically record GIFs of trust, baseline, and side-by-side episodes
+    try:
+        base_dir = os.path.join(os.path.dirname(__file__), "..")
+
+        trust_gif = os.path.join(base_dir, "grid_trust_episode.gif")
+        base_gif = os.path.join(base_dir, "grid_baseline_episode.gif")
+        comp_gif = os.path.join(base_dir, "grid_trust_vs_baseline.gif")
+
+        # record full episodes up to env.max_steps for each run
+        exp.record_trust_episode_gif(out_path=trust_gif)
+        exp.record_baseline_episode_gif(out_path=base_gif)
+        exp.record_comparison_gif(out_path=comp_gif)
+
+        print(f"\nSaved GIF of a trust-based episode to: {trust_gif}")
+        print(f"Saved GIF of a baseline episode to:      {base_gif}")
+        print(f"Saved comparison GIF (left=trust, right=baseline) to: {comp_gif}")
+    except RuntimeError as e:
+        # imageio is optional, so do not crash if it is missing
+        print(f"\n[Warning] Could not record GIFs: {e}")
 
