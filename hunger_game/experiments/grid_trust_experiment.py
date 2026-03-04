@@ -341,6 +341,8 @@ class GridTrustExperiment:
         self._print_summary()
         # Main figure: cooldown + conflict in one image for easy comparison
         self._plot_results()
+        # Save per-episode statistics to disk for further analysis
+        self._save_stats()
 
     def record_trust_episode_gif(
         self,
@@ -514,6 +516,76 @@ class GridTrustExperiment:
         cumx = np.cumsum(x)
         g = (n + 1 - 2 * np.sum(cumx) / cumx[-1]) / n
         return float(max(0.0, min(1.0, g)))
+
+    def _save_stats(self) -> None:
+        """
+        Save per-episode statistics for trust-based and baseline runs to CSV.
+
+        This makes it easy to analyse results without scraping console output.
+        """
+        base_dir = os.path.join(os.path.dirname(__file__), "..")
+        csv_path = os.path.join(base_dir, f"grid_stats{self.save_suffix}.csv")
+
+        num_eps = len(self.trust_cooldown_fraction)
+        # basic safety check
+        if num_eps == 0:
+            return
+
+        import csv
+
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "episode",
+                    "trust_cooldown",
+                    "base_cooldown",
+                    "trust_conflict",
+                    "base_conflict",
+                    "trust_min_return",
+                    "base_min_return",
+                    "trust_total_resources",
+                    "base_total_resources",
+                    "trust_gini_rewards",
+                    "base_gini_rewards",
+                ]
+            )
+            for ep in range(num_eps):
+                writer.writerow(
+                    [
+                        ep + 1,
+                        self.trust_cooldown_fraction[ep]
+                        if ep < len(self.trust_cooldown_fraction)
+                        else "",
+                        self.base_cooldown_fraction[ep]
+                        if ep < len(self.base_cooldown_fraction)
+                        else "",
+                        self.trust_conflict_level[ep]
+                        if ep < len(self.trust_conflict_level)
+                        else "",
+                        self.base_conflict_level[ep]
+                        if ep < len(self.base_conflict_level)
+                        else "",
+                        self.trust_min_return[ep]
+                        if ep < len(self.trust_min_return)
+                        else "",
+                        self.base_min_return[ep]
+                        if ep < len(self.base_min_return)
+                        else "",
+                        self.trust_total_resources[ep]
+                        if ep < len(self.trust_total_resources)
+                        else "",
+                        self.base_total_resources[ep]
+                        if ep < len(self.base_total_resources)
+                        else "",
+                        self.trust_gini_rewards[ep]
+                        if ep < len(self.trust_gini_rewards)
+                        else "",
+                        self.base_gini_rewards[ep]
+                        if ep < len(self.base_gini_rewards)
+                        else "",
+                    ]
+                )
 
     def _print_summary(self) -> None:
         """Print scalar metrics that are not necessarily plotted."""
