@@ -836,3 +836,14 @@ if __name__ == "__main__":
                 writer.writerow([key, mean, std, num_seeds])
         print(f"\nSaved aggregated seed summary to: {summary_csv}")
 
+    # After all seeds are finished, automatically generate aggregated plots
+    # (smoothed mean curves with SEM, and difference plots)
+    print("\n=== Generating aggregated plots (mean ± SEM over 30 seeds) ===")
+    try:
+        from .grid_trust_aggregate import main as aggregate_main
+        aggregate_main()
+        print("Successfully generated aggregated plots.")
+    except Exception as e:
+        print(f"\n[Warning] Could not generate aggregated plots: {e}")
+        print("You can run 'python -m hunger_game.experiments.grid_trust_aggregate' separately to generate them.")
+
