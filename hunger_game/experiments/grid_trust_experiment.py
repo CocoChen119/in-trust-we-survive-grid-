@@ -107,10 +107,12 @@ class GridTrustExperiment:
         cfg: Optional[GridTrustConfig] = None,
         env_kwargs: Optional[dict] = None,
         save_suffix: str = "",
+        global_seed: Optional[int] = 0,
     ):
-        # fix random seeds for reproducibility of figures
-        np.random.seed(0)
-        random.seed(0)
+        # fix random seeds for reproducibility / per-run variability
+        if global_seed is not None:
+            np.random.seed(global_seed)
+            random.seed(global_seed)
 
         self.cfg = cfg or GridTrustConfig()
         if env_kwargs is None:
@@ -319,10 +321,10 @@ class GridTrustExperiment:
             # per-episode worst-case return (baseline)
             self.base_min_return.append(float(np.min(rewards_vec)))
 
-            # per-episode cluster lifetime and conflict level
-            lifetimes = self.env.get_episode_cluster_lifetimes()
+            # per-episode cluster lifetime and conflict level (baseline)
+            lifetimes = env.get_episode_cluster_lifetimes()
             self.base_cluster_lifetime.append(float(np.mean(lifetimes)))
-            self.base_conflict_level.append(self.env.get_episode_conflict_level())
+            self.base_conflict_level.append(env.get_episode_conflict_level())
 
             if (ep + 1) % self.cfg.log_interval == 0:
                 avg_r = np.mean(
@@ -587,42 +589,66 @@ class GridTrustExperiment:
                     ]
                 )
 
-    def _print_summary(self) -> None:
-        """Print scalar metrics that are not necessarily plotted."""
-        def avg(xs: list[float]) -> float:
-            return float(np.mean(xs[-200:])) if xs else 0.0
+    def summary_metrics(self, last_k: int = 200) -> dict:
+        """
+        Compute scalar summary metrics over the last `last_k` episodes.
 
-        print("\n=== Summary over last 200 episodes ===")
-        print(
-            f"Cooldown (trust vs base): "
-            f"{avg(self.trust_cooldown_fraction):.4f} vs {avg(self.base_cooldown_fraction):.4f}"
-        )
-        print(
-            f"Conflict (trust vs base): "
-            f"{avg(self.trust_conflict_level):.4f} vs {avg(self.base_conflict_level):.4f}"
-        )
-        print(
-            f"Cluster lifetime (trust vs base): "
-            f"{avg(self.trust_cluster_lifetime):.1f} vs {avg(self.base_cluster_lifetime):.1f}"
-        )
-        print(
-            f"Min return (trust vs base): "
-            f"{avg(self.trust_min_return):.3f} vs {avg(self.base_min_return):.3f}"
-        )
+        This is useful both for printing a per-run summary and for aggregating
+        statistics across multiple random seeds.
+        """
+
+        def avg(xs: list[float]) -> float:
+            if not xs:
+                return 0.0
+            xs_arr = np.asarray(xs[-last_k:], dtype=np.float32)
+            return float(xs_arr.mean())
 
         # simple cooperation index: fraction of episodes where all agents get
         # non-trivial positive reward
         def coop_index(min_returns: list[float], threshold: float = 0.1) -> float:
             if not min_returns:
                 return 0.0
-            vals = np.array(min_returns, dtype=np.float32)
-            return float(np.mean(vals[-200:] > threshold))
+            vals = np.array(min_returns[-last_k:], dtype=np.float32)
+            return float(np.mean(vals > threshold))
 
-        ci_trust = coop_index(self.trust_min_return)
-        ci_base = coop_index(self.base_min_return)
+        metrics = {
+            "cooldown_trust": avg(self.trust_cooldown_fraction),
+            "cooldown_base": avg(self.base_cooldown_fraction),
+            "conflict_trust": avg(self.trust_conflict_level),
+            "conflict_base": avg(self.base_conflict_level),
+            "cluster_lifetime_trust": avg(self.trust_cluster_lifetime),
+            "cluster_lifetime_base": avg(self.base_cluster_lifetime),
+            "min_return_trust": avg(self.trust_min_return),
+            "min_return_base": avg(self.base_min_return),
+            "coop_index_trust": coop_index(self.trust_min_return),
+            "coop_index_base": coop_index(self.base_min_return),
+        }
+        return metrics
+
+    def _print_summary(self) -> None:
+        """Print scalar metrics that are not necessarily plotted."""
+        metrics = self.summary_metrics(last_k=200)
+
+        print("\n=== Summary over last 200 episodes ===")
         print(
-            f"Cooperation index (all agents >= 0.1 reward): "
-            f"{ci_trust:.3f} (trust) vs {ci_base:.3f} (baseline)"
+            "Cooldown (trust vs base): "
+            f"{metrics['cooldown_trust']:.4f} vs {metrics['cooldown_base']:.4f}"
+        )
+        print(
+            "Conflict (trust vs base): "
+            f"{metrics['conflict_trust']:.4f} vs {metrics['conflict_base']:.4f}"
+        )
+        print(
+            "Cluster lifetime (trust vs base): "
+            f"{metrics['cluster_lifetime_trust']:.1f} vs {metrics['cluster_lifetime_base']:.1f}"
+        )
+        print(
+            "Min return (trust vs base): "
+            f"{metrics['min_return_trust']:.3f} vs {metrics['min_return_base']:.3f}"
+        )
+        print(
+            "Cooperation index (all agents >= 0.1 reward): "
+            f"{metrics['coop_index_trust']:.3f} (trust) vs {metrics['coop_index_base']:.3f} (baseline)"
         )
 
     def _plot_results(self) -> None:
@@ -736,27 +762,77 @@ if __name__ == "__main__":
         "cooldown_steps": 30,
     }
 
-    print("\n=== Running grid trust experiment (main configuration) ===")
-    exp = GridTrustExperiment(cfg, env_kwargs=env_kwargs, save_suffix="")
-    exp.run()
+    # Run the full experiment for multiple random seeds and report variance.
+    num_seeds = 30
+    all_metrics: list[dict] = []
 
-    # After training, automatically record GIFs of trust, baseline, and side-by-side episodes
-    try:
+    for i in range(num_seeds):
+        seed = i + 1
+        print(
+            f"\n=== Running grid trust experiment (main configuration), "
+            f"seed {seed}/{num_seeds} ==="
+        )
+        # use a per-seed suffix so that plots / CSVs are not overwritten
+        exp = GridTrustExperiment(
+            cfg,
+            env_kwargs=env_kwargs,
+            save_suffix=f"_seed{seed}",
+            global_seed=seed,
+        )
+        exp.run()
+
+        # collect scalar metrics for variance analysis
+        m = exp.summary_metrics(last_k=200)
+        m["seed"] = seed
+        all_metrics.append(m)
+
+        # After training for this seed, record GIFs (optional visualisation)
+        try:
+            base_dir = os.path.join(os.path.dirname(__file__), "..")
+
+            trust_gif = os.path.join(base_dir, f"grid_trust_episode_seed{seed}.gif")
+            base_gif = os.path.join(base_dir, f"grid_baseline_episode_seed{seed}.gif")
+            comp_gif = os.path.join(
+                base_dir, f"grid_trust_vs_baseline_seed{seed}.gif"
+            )
+
+            # record full episodes up to env.max_steps for each run
+            exp.record_trust_episode_gif(out_path=trust_gif)
+            exp.record_baseline_episode_gif(out_path=base_gif)
+            exp.record_comparison_gif(out_path=comp_gif)
+
+            print(f"\nSaved GIF of a trust-based episode to: {trust_gif}")
+            print(f"Saved GIF of a baseline episode to:      {base_gif}")
+            print(
+                f"Saved comparison GIF (left=trust, right=baseline) to: {comp_gif}"
+            )
+        except RuntimeError as e:
+            # imageio is optional, so do not crash if it is missing
+            print(f"\n[Warning] Could not record GIFs for seed {seed}: {e}")
+
+    # After all seeds are finished, compute mean / std across seeds as a
+    # simple measure of variance for the main scalar metrics.
+    if all_metrics:
+        import csv
+
+        print("\n=== Aggregated metrics over seeds (mean ± std over last 200 episodes) ===")
+        keys = [k for k in all_metrics[0].keys() if k != "seed"]
+        agg_rows = []
+
+        for key in keys:
+            vals = np.asarray([m[key] for m in all_metrics], dtype=np.float32)
+            mean = float(vals.mean())
+            std = float(vals.std())
+            print(f"{key}: {mean:.4f} ± {std:.4f}  (n={num_seeds})")
+            agg_rows.append((key, mean, std))
+
+        # also save aggregated metrics to a small CSV for later use in the paper
         base_dir = os.path.join(os.path.dirname(__file__), "..")
-
-        trust_gif = os.path.join(base_dir, "grid_trust_episode.gif")
-        base_gif = os.path.join(base_dir, "grid_baseline_episode.gif")
-        comp_gif = os.path.join(base_dir, "grid_trust_vs_baseline.gif")
-
-        # record full episodes up to env.max_steps for each run
-        exp.record_trust_episode_gif(out_path=trust_gif)
-        exp.record_baseline_episode_gif(out_path=base_gif)
-        exp.record_comparison_gif(out_path=comp_gif)
-
-        print(f"\nSaved GIF of a trust-based episode to: {trust_gif}")
-        print(f"Saved GIF of a baseline episode to:      {base_gif}")
-        print(f"Saved comparison GIF (left=trust, right=baseline) to: {comp_gif}")
-    except RuntimeError as e:
-        # imageio is optional, so do not crash if it is missing
-        print(f"\n[Warning] Could not record GIFs: {e}")
+        summary_csv = os.path.join(base_dir, "grid_seed_summary.csv")
+        with open(summary_csv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["metric", "mean", "std", "num_seeds"])
+            for key, mean, std in agg_rows:
+                writer.writerow([key, mean, std, num_seeds])
+        print(f"\nSaved aggregated seed summary to: {summary_csv}")
 

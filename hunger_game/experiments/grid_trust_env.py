@@ -214,6 +214,15 @@ class GridTrustEnv:
                             if p in self.resource_amounts:
                                 self.resource_amounts[p] = 0
 
+        # 3b) Update per-cluster depletion times.
+        # A cluster is considered depleted when all its tiles have zero resource
+        # remaining. We record the first step at which this happens.
+        for cid, positions in self.cluster_positions.items():
+            if self.cluster_depleted_step.get(cid) is not None:
+                continue
+            if all(self.resource_amounts.get(pos, 0) <= 0 for pos in positions):
+                self.cluster_depleted_step[cid] = self.step_count
+
         # 4) termination: fixed horizon or all resources empty
         done = (
             self.step_count >= self.max_steps
